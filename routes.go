@@ -77,7 +77,7 @@ func GetTopics() (result []string, err error) {
 		return result, err
 	}
 	defer resp.Body.Close()
-	err = json.NewDecoder(resp.Body).Decode(&result)
+	err = json.NewDecoder(resp.Body).Decode(&temp)
 	if err != nil {
 		return
 	}

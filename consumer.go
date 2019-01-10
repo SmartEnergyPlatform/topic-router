@@ -29,7 +29,7 @@ import (
 
 func InitConsumer(topics []string) (chan bool, error) {
 	for _, topic := range topics {
-		log.Println("init topic: ", topic)
+		log.Println("init topic: \""+topic+"\"")
 		Produce(topic, "topic_init")
 	}
 
