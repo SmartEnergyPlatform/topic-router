@@ -71,11 +71,20 @@ func GetRoutes(msg *sarama.ConsumerMessage) (result []string, envelope map[strin
 }
 
 func GetTopics() (result []string, err error) {
+	temp := []string{}
 	resp, err := http.Get(Config.TopicPrefixRepoUrl + "/topics")
 	if err != nil {
 		return result, err
 	}
 	defer resp.Body.Close()
 	err = json.NewDecoder(resp.Body).Decode(&result)
+	if err != nil {
+		return
+	}
+	for _, topic := range temp {
+		if topic != "" && topic != " " {
+			result = append(result, topic)
+		}
+	}
 	return
 }
