@@ -29,7 +29,6 @@ import (
 
 type ConfigStruct struct {
 	ZookeeperUrl        string
-	SaramaLog           string
 	ConsumerGroup       string
 	TopicPrefixRepoUrl  string
 	TopicUpdateInterval int64

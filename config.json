@@ -1,6 +1,5 @@
 {
   "ZookeeperUrl": "zk:2181",
-  "SaramaLog": "false",
   "ConsumerGroup": "ktrouter",
   "TopicPrefixRepoUrl": "http://pts:8080",
   "TopicUpdateInterval": 10,

@@ -17,112 +17,125 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"github.com/segmentio/kafka-go"
+	"github.com/wvanbergen/kazoo-go"
+	"io"
+	"io/ioutil"
 	"log"
 
 	"time"
-
-	"github.com/Shopify/sarama"
-	"github.com/wvanbergen/kafka/consumergroup"
-	"github.com/wvanbergen/kazoo-go"
 )
 
-func InitConsumer(topics []string) (chan bool, error) {
-	for _, topic := range topics {
-		log.Println("init topic: \""+topic+"\"")
-		Produce(topic, "topic_init")
+
+func InitKafkaReader(parentContext context.Context, errOut chan<-error, brokers []string, topics []string, startTime time.Time){
+	errIn := make(chan error)
+	ctx, cancel := context.WithCancel(parentContext)
+	for _, topic := range topics{
+		initKafkaReader(ctx, errIn, brokers, Config.ConsumerGroup, topic, getKafkaHandler(startTime))
 	}
+	go func(){
+		select {
+		case <-parentContext.Done():
+			log.Println("close kafka readers ", topics)
+		case err := <-errIn:
+			log.Println("ERROR: ", err)
+			cancel()
+			errOut <- err
+		}
+	}()
+}
 
-	stop := make(chan bool)
-	zk, chroot := kazoo.ParseConnectionString(Config.ZookeeperUrl)
-	kafkaconf := consumergroup.NewConfig()
-	kafkaconf.Version = sarama.V0_10_1_0
-	kafkaconf.Consumer.Return.Errors = true
-	kafkaconf.Zookeeper.Chroot = chroot
-	consumerGroupName := Config.ConsumerGroup
-	consumer, err := consumergroup.JoinConsumerGroup(
-		consumerGroupName,
-		topics,
-		zk,
-		kafkaconf)
-
+func initKafkaReader(ctx context.Context, errOut chan<-error, brokers []string, groupId string, topic string, handler func(msg kafka.Message)error){
+	log.Println("DEBUG: consume topic: \""+topic+"\"")
+	err := InitTopic(topic)
 	if err != nil {
-		return stop, err
+		log.Println("ERROR: unable to create topic", err)
 	}
-
-	go func(stop chan bool, consumer *consumergroup.ConsumerGroup) {
-		defer consumer.Close()
-		startTime := time.Now().Add(time.Duration(-10) * time.Second)
-		kafkaTimeout := Config.KafkaTimeout
-		useTimeout := true
-		if kafkaTimeout <= 0 {
-			useTimeout = false
-			kafkaTimeout = 3600
-		}
-		kafkaping := time.NewTicker(time.Second * time.Duration(kafkaTimeout/10))
-		kafkatimout := time.NewTicker(time.Second * time.Duration(kafkaTimeout))
-		timeouts := map[string]bool{}
-		for _, topic := range topics {
-			timeouts[topic] = false
-		}
+	r := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:   brokers,
+		GroupID:  groupId,
+		Topic:     topic,
+		MaxWait:  1*time.Second,
+		Logger: log.New(ioutil.Discard, "", 0),
+		ErrorLogger:log.New(ioutil.Discard, "", 0),
+	})
+	go func(){
 		for {
 			select {
-			case <-kafkaping.C:
-				if useTimeout {
-					for topic, timeout := range timeouts {
-						if timeout {
-							log.Println("send ping to ", topic)
-							Produce(topic, "topic_init")
-						}
-					}
-				}
-			case <-kafkatimout.C:
-				if useTimeout {
-					for topic, timeout := range timeouts {
-						if timeout {
-							log.Fatal("ERROR: kafka missing ping timeout in ", topic)
-						}
-						timeouts[topic] = true
-					}
-				}
-			case <-stop:
+			case <-ctx.Done():
+				log.Println("close kafka reader ", topic)
 				return
-			case errMsg := <-consumer.Errors():
-				log.Fatal("ERROR: kafka consumer error: ", errMsg)
-			case msg, ok := <-consumer.Messages():
-				if !ok {
-					log.Fatal("empty kafka consumer")
-				} else {
-					timeouts[msg.Topic] = false
-					if msg.Timestamp.Before(startTime) {
-						log.Println("WARNING: ignore old message: ", msg.Topic, msg.Timestamp)
-						consumer.CommitUpto(msg)
-					} else if string(msg.Value) != "topic_init" {
-						targets, envelope, err := GetRoutes(msg)
-						if err != nil {
-							log.Println(err, string(msg.Value))
-						} else {
-							log.Println(msg.Topic, "(", envelope["device_id"].(string), envelope["service_id"].(string), ") --> ", targets)
-							envelope["source_topic"] = msg.Topic
-							if len(targets) > 0 {
-								resultMsg, err := json.Marshal(envelope)
-								if err != nil {
-									log.Println("ERROR while marshaling envelope: ", err)
-								} else {
-									for _, targetTopic := range targets {
-										Produce(targetTopic, string(resultMsg))
-									}
-								}
-							}
-							consumer.CommitUpto(msg)
-						}
-					} else {
-						consumer.CommitUpto(msg)
-					}
+			default:
+				m, err := r.FetchMessage(ctx)
+				if err == io.EOF || err == context.Canceled {
+					log.Println("close consumer for topic ", topic)
+					return
+				}
+				if err != nil{
+					log.Println("ERROR: while consuming topic ", topic, err)
+					errOut<-err
+					return
+				}
+				err = handler(m)
+				if err != nil {
+					log.Println("ERROR: unable to handle message (no commit)", err)
+				}else{
+					//log.Println("DEBUG: commit for ", m.Topic)
+					err = r.CommitMessages(ctx, m)
 				}
 			}
 		}
-	}(stop, consumer)
+	}()
+}
 
-	return stop, nil
+
+func getKafkaHandler(startTime time.Time) func(kafka.Message)error {
+	return func(msg kafka.Message) error {
+		log.Println("DEBUG: handle msg for", msg.Topic)
+		if msg.Time.Before(startTime) {
+			log.Println("WARNING: ignore old message: ", msg.Topic, msg.Time)
+			return nil
+		} else if string(msg.Value) != "topic_init" {
+			targets, envelope, err := GetRoutes(msg)
+			if err != nil {
+				log.Println("ERROR: ", err, string(msg.Value))
+			} else {
+				log.Println(msg.Topic, "(", envelope["device_id"].(string), envelope["service_id"].(string), ") --> ", targets)
+				envelope["source_topic"] = msg.Topic
+				if len(targets) > 0 {
+					resultMsg, err := json.Marshal(envelope)
+					if err != nil {
+						log.Println("ERROR while marshaling envelope: ", err)
+					} else {
+						for _, targetTopic := range targets {
+							err = Produce(targetTopic, string(resultMsg))
+							if err != nil {
+								log.Fatal("ERROR while producing msg", err, targetTopic, resultMsg)
+							}
+						}
+					}
+				}
+				return nil
+			}
+		}
+		return nil
+	}
+}
+
+
+func GetBroker() (brokers []string, err error) {
+	return getBroker(Config.ZookeeperUrl)
+}
+
+func getBroker(zkUrl string) (brokers []string, err error) {
+	zookeeper := kazoo.NewConfig()
+	zk, chroot := kazoo.ParseConnectionString(zkUrl)
+	zookeeper.Chroot = chroot
+	if kz, err := kazoo.NewKazoo(zk, zookeeper); err != nil {
+		return brokers, err
+	}else{
+		return kz.BrokerList()
+	}
 }

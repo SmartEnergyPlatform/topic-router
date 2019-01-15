@@ -17,16 +17,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
-	"os"
-
 	"reflect"
 	"time"
 
 	"sort"
-
-	"github.com/Shopify/sarama"
 )
 
 func main() {
@@ -38,36 +35,45 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if Config.SaramaLog == "true" {
-		sarama.Logger = log.New(os.Stderr, "[Sarama] ", log.LstdFlags)
-	}
-
-	Init()
-	defer CloseProducer()
+	Init(context.Background())
 }
 
-func Init() {
+func Init(done context.Context){
 	ticker := time.NewTicker(time.Duration(Config.TopicUpdateInterval) * time.Second)
-	stop := make(chan bool)
 	topics := []string{}
+	startTime := time.Now().Add(time.Duration(-10) * time.Second)
+	var ctx context.Context
+	var stopOldConsumers = func() {}
+	errIn := make(chan error)
 	for {
+		select {
+		case <-done.Done():
+			log.Println("stop program")
+			ClearProducer()
+			return
+		case err := <-errIn:
+			log.Println("ERROR: ", err)
+			log.Println("reconnect kafka")
+			topics = []string{}
+		case <-ticker.C:
+		}
 		newTopics, err := GetTopics()
 		sort.Strings(newTopics)
+		//log.Println("check for new topics", newTopics)
 		if err != nil {
-			log.Println("ERROR: ", err)
+			log.Fatal("ERROR: while getting new topics ", err)
 		}
 		if err == nil && !reflect.DeepEqual(topics, newTopics) {
+			ClearProducer()
 			log.Println("update consumer: ", topics, newTopics)
-			newStop, err := InitConsumer(newTopics)
+			broker, err := GetBroker()
 			if err != nil {
-				log.Println("ERROR: ", err)
-			} else {
-				topics = newTopics
-				close(stop)
-				stop = newStop
-				log.Println("successfull consumer update: ", topics)
+				log.Fatal("ERROR: while getting broker", err)
 			}
+			topics = newTopics
+			stopOldConsumers()
+			ctx, stopOldConsumers = context.WithCancel(context.Background())
+			InitKafkaReader(ctx, errIn, broker, topics,startTime)
 		}
-		<-ticker.C
 	}
 }

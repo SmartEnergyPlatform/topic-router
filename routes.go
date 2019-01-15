@@ -18,32 +18,17 @@ package main
 
 import (
 	"errors"
+	"github.com/segmentio/kafka-go"
 	"net/url"
 
 	"encoding/json"
 	"net/http"
 
 	"log"
-
-	"github.com/Shopify/sarama"
 )
 
-type PrefixMessage struct {
-	DeviceId    string      `json:"device_id,omitempty"`
-	ServiceId   string      `json:"service_id,omitempty"`
-	RoutingInfo string      `json:"routing_info,omitempty"`
-	Value       interface{} `json:"value"`
-	AsString    bool        `json:"as_string"`
-}
 
-type Envelope struct {
-	DeviceId    string      `json:"device_id,omitempty"`
-	ServiceId   string      `json:"service_id,omitempty"`
-	Value       interface{} `json:"value"`
-	SourceTopic string      `json:"source_topic"`
-}
-
-func GetRoutes(msg *sarama.ConsumerMessage) (result []string, envelope map[string]interface{}, err error) {
+func GetRoutes(msg kafka.Message) (result []string, envelope map[string]interface{}, err error) {
 	topic := url.QueryEscape(msg.Topic)
 	err = json.Unmarshal(msg.Value, &envelope)
 	if err != nil {
