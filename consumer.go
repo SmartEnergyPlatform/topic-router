@@ -71,7 +71,7 @@ func InitConsumer(topics []string) (chan bool, error) {
 				if useTimeout {
 					for topic, timeout := range timeouts {
 						if timeout {
-							log.Println("send ping to ", topic)
+							//log.Println("send ping to ", topic)
 							Produce(topic, "topic_init")
 						}
 					}
@@ -102,7 +102,7 @@ func InitConsumer(topics []string) (chan bool, error) {
 						if err != nil {
 							log.Println(err, string(msg.Value))
 						} else {
-							log.Println(msg.Topic, "(", envelope["device_id"].(string), envelope["service_id"].(string), ") --> ", targets)
+							//log.Println(msg.Topic, "(", envelope["device_id"].(string), envelope["service_id"].(string), ") --> ", targets)
 							envelope["source_topic"] = msg.Topic
 							if len(targets) > 0 {
 								resultMsg, err := json.Marshal(envelope)
